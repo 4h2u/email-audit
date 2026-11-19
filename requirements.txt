@@ -1,0 +1,3 @@
+Python 3.9+
+System: dig (bind9-dnsutils or bind-utils)
+No third-party Python packages.
