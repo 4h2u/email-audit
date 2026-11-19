@@ -819,19 +819,26 @@ def default_fetch(url):
         return exc.code, ""
 
 
-def audit(domain, lookup=None, fetch=None, dkim_selector=None):
+def audit(domain, lookup=None, fetch=None, dkim_selector=None, dkim_selectors=None):
     domain = _norm(domain)
     if lookup is None:
         lookup = dig
     if fetch is None:
         fetch = default_fetch
     dmarc_result = dmarc(domain, lookup)
+    selectors = [item for item in (dkim_selectors or []) if item]
+    if not selectors and dkim_selector:
+        selectors = [dkim_selector]
+    dkim_results = [dkim(domain, lookup, selector) for selector in selectors]
+    if not dkim_results:
+        dkim_results = [dkim(domain, lookup, None)]
     return {
         "domain": domain,
         "mx": parse_mx(lookup("MX", domain)),
         "spf": spf(domain, lookup),
         "dmarc": dmarc_result,
-        "dkim": dkim(domain, lookup, dkim_selector),
+        "dkim": dkim_results[0],
+        "dkim_all": dkim_results,
         "bimi": bimi(domain, lookup, dmarc_result),
         "mta_sts": mta_sts(domain, lookup, fetch),
         "tls_rpt": tls_rpt(domain, lookup),
@@ -878,6 +885,18 @@ def report(result):
         for error in dmarc_result["errors"]:
             lines.append(f"{'':<10} error: {error}")
     dkim_result = result["dkim"]
+    dkim_results = result.get("dkim_all") or [dkim_result]
+    if len(dkim_results) > 1:
+        for item in dkim_results:
+            if not item["checked"]:
+                continue
+            if item["revoked"]:
+                lines.append(f"{'DKIM':<10} {item['selector']} revoked (empty p=)")
+            elif item["has_key"]:
+                lines.append(f"{'DKIM':<10} {item['selector']} key present")
+            else:
+                lines.append(f"{'DKIM':<10} {item['selector']} no record")
+        return "\n".join(lines)
     if not dkim_result["checked"]:
         lines.append(f"{'DKIM':<10} not checked (no selector)")
     elif dkim_result["revoked"]:
@@ -921,19 +940,31 @@ def main(argv):
     parser = argparse.ArgumentParser(description="Audit MX, SPF, DMARC, MTA-STS, TLS-RPT, and BIMI.")
     parser.add_argument("domains", nargs="+")
     parser.add_argument("--json", action="store_true")
-    parser.add_argument("--dkim-selector", default="")
+    parser.add_argument("--dkim-selector", default="", help="legacy single DKIM selector")
+    parser.add_argument(
+        "--selectors",
+        default="",
+        help="comma-separated DKIM selectors to check, e.g. google,selector1",
+    )
     args = parser.parse_args(argv)
+    selectors = [item.strip() for item in args.selectors.split(",") if item.strip()]
     code = 0
     for domain in args.domains:
-        result = audit(domain, dkim_selector=args.dkim_selector or None)
+        result = audit(domain, dkim_selectors=selectors, dkim_selector=args.dkim_selector or None)
         if args.json:
             print(json.dumps(result, indent=2))
         else:
             print(report(result))
             print()
-        if result["mx"]["errors"] or (
-            result["spf"] is not None and not result["spf"]["valid"]
-        ):
+        findings = []
+        if result["mx"]["errors"] or result["mx"].get("null_mx"):
+            findings.append("mx")
+        if result["spf"] is None or not result["spf"]["valid"]:
+            findings.append("spf")
+        if result["dmarc"] is None or result["dmarc"].get("policy") == "none":
+            findings.append("dmarc")
+        if findings:
+            print(f"  critical: {', '.join(findings)} (exit 1)", file=sys.stderr)
             code = 1
     return code
 

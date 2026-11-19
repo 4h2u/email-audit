@@ -34,10 +34,28 @@ python3 verify_email.py --csv contacts.csv --column business_email > results.csv
 ```bash
 python3 dns_audit.py example.com
 python3 dns_audit.py --json example.com
+python3 dns_audit.py --selectors google,selector1 example.com
 python3 dns_audit.py --dkim-selector s1 example.com
 ```
 
-`--json` is on `dns_audit.py` only.
+`--json` is on `dns_audit.py` only. `--selectors` takes a comma-separated list and reports each
+selector separately; `--dkim-selector` still works for a single one.
+
+## Exit codes
+
+`dns_audit.py` exits `1` when any of these is true for any domain:
+
+- SPF is missing or invalid (including more than 10 lookups or 2 void lookups)
+- DMARC is missing, or its policy is `p=none`
+- the domain publishes a null MX (`0 .`) or has MX parse errors
+
+Everything healthy exits `0`. That makes the audit usable as a gate:
+
+```bash
+python3 dns_audit.py mydomain.com > audit.txt || echo "mail posture needs attention"
+```
+
+A one-line `critical:` note goes to stderr so `--json` output stays clean.
 
 ## What the results mean
 
@@ -64,13 +82,13 @@ For `dns_audit.py`: SPF `-all` is strict, `~all` is soft-fail, `+all` means anyo
 domain. No `all` mechanism leaves the policy blank — it is not reported as `+all`. More than 10 SPF
 DNS lookups, or more than 2 void lookups, is an error (RFC 7208). DMARC `p=none` only reports,
 `p=quarantine` and `p=reject` enforce. A missing `p` tag is warned, not filled in. BIMI is read
-only at `default._bimi`. DKIM is not queried unless `--dkim-selector` is set.
+only at `default._bimi`. DKIM is not queried unless `--selectors` or `--dkim-selector` is set.
 
 ## Limits (read this before trusting the output)
 
 - **Catch-all domains cannot be verified** by SMTP. No tool can, including the paid ones.
 - **DKIM selector names are arbitrary.** This tool does not guess them. Pass the selector from the
-  message headers or the provider's documentation: `--dkim-selector s1`.
+  message headers or the provider's documentation: `--selectors s1,google`.
 - A record like `v=DKIM1; p=` is a **revoked** key and is reported as such, not as configured.
 - MTA-STS policy text is fetched only when a `_mta-sts` TXT record exists. A failed fetch leaves
   `mode` empty.
@@ -87,6 +105,15 @@ only at `default._bimi`. DKIM is not queried unless `--dkim-selector` is set.
 This is for checking your own lists before sending, not for harvesting addresses or probing servers
 at volume. Bulk SMTP probing is abusive and will get your IP blocked. Only check addresses you have
 a lawful basis to contact, and follow the rules for commercial email in the recipient's country.
+
+## Tests
+
+```bash
+python3 -m unittest discover -v
+```
+
+50 tests, no network access — the DNS and SMTP layers are injected as fakes. GitHub Actions runs
+them on Python 3.9, 3.11 and 3.13 for every push. See [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
